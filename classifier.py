@@ -50,7 +50,7 @@ def load_obj(name):
 hyperparams = {
     "ngrams": 3,
     "min_freq": 10,
-    "batch_size": 10000,
+    "batch_size": 100,
     "d2v_lr": 0.25,
     "emb_size": 500,
     "neg_samples": 5,
@@ -385,7 +385,7 @@ class Classifier():
                 total_gen_time += gen_time
                 
                 total_batches += 1
-                if total_batches % 100 == 0:
+                if total_batches % 10000 == 0:
                     loss = self.d2v.calculate_loss(tok_idxs[:100], doc_idxs[:100], labels[:100])
                     d2v_losses.append(loss)
 
