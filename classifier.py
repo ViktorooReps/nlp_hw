@@ -2,6 +2,8 @@ from typing import List, Any
 from random import random
 
 from collections import defaultdict
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import GridSearchCV
 
 import random
 import string
@@ -58,8 +60,8 @@ systemparams = {
     "memory_limit": 12.5 * 1024 * 1024 * 1024,
     "save_preprocessed": False,
     "use_saved_preprocessed": True,
-    "save_doc2vec": True,
-    "use_saved_doc2vec": False
+    "save_classifier": True,
+    "use_saved_classifier": False
 }
 
 
@@ -337,63 +339,84 @@ class Doc2Vec:
         Z = safe_sigmoid(np.sum(self.tok_embs[tok_idxs] * self.doc_embs[doc_idxs], axis=1))
         return - np.sum(labels * np.log(Z) + (1 - labels) * np.log(1 - Z))
 
-    def fit(self, data: Data, distrib, epochs=10):
+
+class Classifier():
+    def __init__(self, d2v: Doc2Vec):
+        self.d2v = d2v
+
+    FIRST_TRAIN = 0
+    TRAIN_LEN = 15000
+    FIRST_VAL = 15000
+    VAL_LEN = 10000
+    def fit(self, unlabeled_data: Data, distrib, epochs=10):
         """Trains embeddings on given data, returns losses over epochs"""
         print("\nFitting doc2vec to doc-tok pairs")
 
-        losses = []
+        d2v_losses = []
+        train_accs = []
+        val_accs = []
+
+        _, _, val_labels = load_dataset_fast(parts=("dev",))["dev"]
+        _, _, train_labels = load_dataset_fast(parts=("train",))["train"]
+        val_labels = np.array([1 if lbl == "pos" else 0 for lbl in val_labels])
+        train_labels = np.array([1 if lbl == "pos" else 0 for lbl in train_labels])
+
+        train_idxs = np.arange(self.FIRST_TRAIN, self.FIRST_TRAIN + self.TRAIN_LEN)
+        val_idxs = np.arange(self.VAL_TRAIN, self.FIRST_VAL + self.VAL_LEN)
+
+        train_embs = self.d2v.doc_embs[train_idxs]
+        val_embs = self.d2v.doc_embs[val_idxs]
 
         for epoch in range(epochs):
-            data.shuffle()
+            unlabeled_data.shuffle()
 
             total_batches = 0
             total_time = 0
             total_gen_time = 0
-            total_Z_time = 0
-            total_grad_time = 0
-            total_sum_time = 0
 
-            first_iter = True
-            res = None
             for tok_idxs, doc_idxs, labels, gen_time in batch_generator(
                 data, distrib, batch_size=hyperparams["batch_size"]):
 
                 start_time = time.time()                
-                Z_time, grad_time, sum_time = self.train(tok_idxs, doc_idxs, labels, lr=hyperparams["d2v_lr"])
+                self.d2v.train(tok_idxs, doc_idxs, labels, lr=hyperparams["d2v_lr"])
                 secs = time.time() - start_time
-
-                total_Z_time += Z_time
-                total_grad_time += grad_time
-                total_sum_time += sum_time
 
                 total_time += secs
                 total_gen_time += gen_time
                 
                 total_batches += 1
                 if total_batches % 100 == 0:
-                    loss = self.calculate_loss(tok_idxs[:100], doc_idxs[:100], labels[:100])
-                    losses.append(loss)
+                    loss = self.d2v.calculate_loss(tok_idxs[:100], doc_idxs[:100], labels[:100])
+                    d2v_losses.append(loss)
 
                     print("\ntime spent generating batches: " + str(total_gen_time) + " sec")
                     print("time spent calculating: " + str(total_time) + " sec")
-                    print("time spent calculating Z: " + str(total_Z_time) + " sec")
-                    print("time spent calculating grad: " + str(total_grad_time) + " sec")
-                    print("time spent calculating sum: " + str(total_sum_time) + " sec")
                     print("loss: " + str(loss) + " on batch " + str(total_batches))
                     total_time = 0
                     total_gen_time = 0
-                    total_Z_time = 0
-                    total_grad_time = 0
-                    total_sum_time = 0
 
-        return losses
+            train_acc, val_acc = self.train_logreg(train_embs, train_labels, val_embs, val_labels)
+            train_accs.append(train_acc)
+            val_accs.append(val_acc)
 
+        return d2v_losses, train_accs, val_accs
 
-def train_LR(embs, train_data, val_data):
-    """Trains logistic regression classifier on train_data (doc_embs, labels)
-    
-    Returns (model, train_accuracy, val_accuracy)"""
-    pass
+    def train_logreg(self, train_embs, train_lbls, val_embs, val_lbls):
+        logreg = LogisticRegression(n_jobs=-1)
+        Cs = np.logspace(-6, -1, 10)
+        self.clf = GridSearchCV(logreg, n_jobs=-1, cv=10, param_grid=dict(C=Cs))
+        self.clf.fit(train_embs, train_labels)
+
+        preds_train = self.clf.predict(train_embs)
+        preds_val = self.clf.predict(val_embs)
+
+        total_train = len(train_lbls)
+        total_val = len(val_lbls)
+
+        train_acc = np.sum(preds_train * train_lbls) / total_train
+        val_acc = np.sum(preds_val * val_lbls) / total_val
+        
+        return train_acc, val_acc
 
 def train(
         train_texts: List[str],
@@ -416,16 +439,20 @@ def train(
         save_obj(pretrain_data, "pretrain_data")
         save_obj(tok_distr, "token_distridution")
 
-    if systemparams["use_saved_doc2vec"]:
-        d2v = load_obj("doc2vec")
+    if systemparams["use_saved_classifier"]:
+        classifier = load_obj("classifier")
     else:
-        d2v = Doc2Vec(num_docs=pretrain_data.total_docs, num_toks=pretrain_data.total_toks)
-        losses = d2v.fit(pretrain_data, tok_distr)
-        save_obj(losses, "losses")
+        classifier = Classifier(
+            Doc2Vec(num_docs=pretrain_data.total_docs, num_toks=pretrain_data.total_toks)
+        )
+        d2v_losses, train_accs, val_accs = classifier.fit(pretrain_data, tok_distr)
 
-    if systemparams["save_doc2vec"]:
-        d2v.tok_embs = None
-        save_obj(d2v, "doc2vec")
+        save_obj(d2v_losses, "d2v_losses")
+        save_obj(train_accs, "train_accs")
+        save_obj(val_accs, "val_accs")
+
+    if systemparams["save_classifier"]:
+        save_obj(classifier, "classifier")
 
     return None
 
@@ -439,6 +466,9 @@ def pretrain(texts_list: List[List[str]]) -> Any:
     limit_memory(systemparams["memory_limit"])
     random.seed(42)
     np.random.seed(42)
+
+    for lst in texts_list:
+        print(len(lst))
 
     conc_texts = list(itertools.chain(*texts_list))
     
