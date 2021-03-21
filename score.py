@@ -26,6 +26,8 @@ def load_dataset_fast(data_dir=FILIMDB_PATH, parts=('train', 'dev', 'test')):
         if os.path.exists(ypath):
             with codecs.open(ypath, 'r', encoding='utf-8') as inp:
                 labels = [s.strip() for s in inp.readlines()]
+                print(len(labels))
+                print(len(texts))
             assert len(labels) == len(texts), 'Number of labels and texts differ in %s set!' % part
             for cls in set(labels):
                 print(cls, sum((1 for l in labels if l == cls)))
