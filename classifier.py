@@ -59,7 +59,7 @@ hyperparams = {
 systemparams = {
     "memory_limit": 12.5 * 1024 * 1024 * 1024,
     "save_preprocessed": False,
-    "use_saved_preprocessed": True,
+    "use_saved_preprocessed": False,
     "save_classifier": True,
     "use_saved_classifier": False
 }
