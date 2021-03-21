@@ -47,6 +47,7 @@ def load_obj(name):
 
 hyperparams = {
     "ngrams": 3,
+    "min_freq": 10,
     "batch_size": 10000,
     "d2v_lr": 0.25,
     "emb_size": 500,
@@ -268,7 +269,8 @@ def batch_generator(data: Data, distrib, nb=5, batch_size=100):
 eps = np.finfo(float).eps
 
 def safe_sigmoid(z):
-    return sigmoid(z) + eps 
+    a = sigmoid(z)
+    return a - eps * a + (1 - a) * eps 
 
 def sigmoid(z):
     return 1 / (1 + np.exp(-z))
@@ -278,48 +280,50 @@ class Doc2Vec:
 
     def __init__(self, num_docs, num_toks, emb_size=500):
         self.emb_size = emb_size
-        self.doc_embs = np.random.uniform(low=-0.001, high=0.001, size=(emb_size, num_docs))
-        self.tok_embs = np.random.uniform(low=-0.001, high=0.001, size=(emb_size, num_toks))
+        self.doc_embs = np.random.uniform(low=-0.001, high=0.001, size=(num_docs, emb_size))
+        self.tok_embs = np.random.uniform(low=-0.001, high=0.001, size=(num_toks, emb_size))
 
     # results for 50000 examples:
-    # einsum (9.8 sec - 100, 17.25 sec - 10000) 2,5; 2,7; 4,7
-    def train2(self, tok_idxs, doc_idxs, labels, lr=0.25):
+    # einsum (1.3 sec - 100, 0.74 sec - 10000) 2,5; 2,7; 4,7
+    def train(self, tok_idxs, doc_idxs, labels, lr=0.25):
         Z_time = time.time()
-        Z = sigmoid(np.einsum("ij,ij->j", self.tok_embs[:, tok_idxs], self.doc_embs[:, doc_idxs]))
+        Z = sigmoid(np.einsum("ij,ij->i", self.tok_embs[tok_idxs], self.doc_embs[doc_idxs]))
         Z_time = time.time() - Z_time 
+
+        batch_size = len(tok_idxs)
         
         grad_time = time.time()
-        doc_grad = self.tok_embs[:, tok_idxs] * (labels - Z) * lr
-        tok_grad = self.doc_embs[:, doc_idxs] * (labels - Z) * lr
+        doc_grad = (labels - Z).reshape((batch_size, 1)) * self.tok_embs[tok_idxs] * lr
+        tok_grad = (labels - Z).reshape((batch_size, 1)) * self.doc_embs[doc_idxs] * lr
         grad_time = time.time() - grad_time
         
         sum_time = time.time()
-        self.tok_embs[:, tok_idxs] += tok_grad
-        self.doc_embs[:, doc_idxs] += doc_grad
+        self.tok_embs[tok_idxs] += tok_grad
+        self.doc_embs[doc_idxs] += doc_grad
         sum_time = time.time() - sum_time
 
         return (Z_time, grad_time, sum_time)
 
     # results for 500 batches:
     # for-loop (10.4 sec - 100, 11.0 sec - 10000) 3.8; 4.0; 2.2
-    def train(self, tok_idxs, doc_idxs, labels, lr=0.25):
+    def train2(self, tok_idxs, doc_idxs, labels, lr=0.25):
         total_Z_time = 0
         total_grad_time = 0
         total_sum_time = 0
 
         for tok_idx, doc_idx, lbl in zip(tok_idxs, doc_idxs, labels):
             Z_time = time.time()
-            Z = sigmoid(self.tok_embs[:, tok_idx].T @ self.doc_embs[:, doc_idx])
+            Z = sigmoid(self.tok_embs[tok_idx].T @ self.doc_embs[doc_idx])
             Z_time = time.time() - Z_time 
 
             grad_time = time.time()
-            doc_grad = self.tok_embs[:, tok_idx] * (lbl - Z) * lr
-            tok_grad = self.doc_embs[:, doc_idx] * (lbl - Z) * lr
+            doc_grad = self.tok_embs[tok_idx] * (lbl - Z) * lr
+            tok_grad = self.doc_embs[doc_idx] * (lbl - Z) * lr
             grad_time = time.time() - grad_time
 
             sum_time = time.time()
-            self.tok_embs[:, tok_idx] += tok_grad
-            self.doc_embs[:, doc_idx] += doc_grad
+            self.tok_embs[tok_idx] += tok_grad
+            self.doc_embs[doc_idx] += doc_grad
             sum_time = time.time() - sum_time
 
             total_Z_time += Z_time
@@ -330,7 +334,7 @@ class Doc2Vec:
     
 
     def calculate_loss(self, tok_idxs, doc_idxs, labels):
-        Z = safe_sigmoid(np.sum(self.tok_embs[:, tok_idxs] * self.doc_embs[:, doc_idxs], axis=0))
+        Z = safe_sigmoid(np.sum(self.tok_embs[tok_idxs] * self.doc_embs[doc_idxs], axis=1))
         return - np.sum(labels * np.log(Z) + (1 - labels) * np.log(1 - Z))
 
     def fit(self, data: Data, distrib, epochs=10):
@@ -442,7 +446,7 @@ def pretrain(texts_list: List[List[str]]) -> Any:
         pretrain_data = load_obj("pretrain_data")
         tok_distr = load_obj("token_distridution")
     else:
-        prep = Preprocessor(ngrams=hyperparams["ngrams"])
+        prep = Preprocessor(ngrams=hyperparams["ngrams"], min_entries=hyperparams["min_freq"])
         pretrain_data = Data(prep, conc_texts)
         tok_distr = prep.create_distribution()
 
