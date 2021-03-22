@@ -48,9 +48,9 @@ def load_obj(name):
         return pickle.load(f)
 
 hyperparams = {
-    "ngrams": 3,
-    "min_freq": 10,
-    "batch_size": 100,
+    "ngrams": 1,
+    "min_freq": 2,
+    "batch_size": 10000,
     "d2v_lr": 0.25,
     "emb_size": 500,
     "neg_samples": 5,
@@ -362,7 +362,7 @@ class Classifier():
         train_labels = np.array([1 if lbl == "pos" else 0 for lbl in train_labels])
 
         train_idxs = np.arange(self.FIRST_TRAIN, self.FIRST_TRAIN + self.TRAIN_LEN)
-        val_idxs = np.arange(self.VAL_TRAIN, self.FIRST_VAL + self.VAL_LEN)
+        val_idxs = np.arange(self.FIRST_VAL, self.FIRST_VAL + self.VAL_LEN)
 
         train_embs = self.d2v.doc_embs[train_idxs]
         val_embs = self.d2v.doc_embs[val_idxs]
@@ -375,7 +375,7 @@ class Classifier():
             total_gen_time = 0
 
             for tok_idxs, doc_idxs, labels, gen_time in batch_generator(
-                data, distrib, batch_size=hyperparams["batch_size"]):
+                unlabeled_data, distrib, batch_size=hyperparams["batch_size"]):
 
                 start_time = time.time()                
                 self.d2v.train(tok_idxs, doc_idxs, labels, lr=hyperparams["d2v_lr"])
@@ -385,7 +385,7 @@ class Classifier():
                 total_gen_time += gen_time
                 
                 total_batches += 1
-                if total_batches % 10000 == 0:
+                if total_batches % 100 == 0:
                     loss = self.d2v.calculate_loss(tok_idxs[:100], doc_idxs[:100], labels[:100])
                     d2v_losses.append(loss)
 
@@ -396,6 +396,7 @@ class Classifier():
                     total_gen_time = 0
 
             train_acc, val_acc = self.train_logreg(train_embs, train_labels, val_embs, val_labels)
+            print("Log reg: train " + str(train_acc) + " val " + str(val_acc))
             train_accs.append(train_acc)
             val_accs.append(val_acc)
 
@@ -405,7 +406,7 @@ class Classifier():
         logreg = LogisticRegression(n_jobs=-1)
         Cs = np.logspace(-6, -1, 10)
         self.clf = GridSearchCV(logreg, n_jobs=-1, cv=10, param_grid=dict(C=Cs))
-        self.clf.fit(train_embs, train_labels)
+        self.clf.fit(train_embs, train_lbls)
 
         preds_train = self.clf.predict(train_embs)
         preds_val = self.clf.predict(val_embs)
