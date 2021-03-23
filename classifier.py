@@ -50,7 +50,7 @@ def load_obj(name):
 hyperparams = {
     "ngrams": 1,
     "min_freq": 2,
-    "batch_size": 10000,
+    "batch_size": 100,
     "d2v_lr": 0.25,
     "emb_size": 500,
     "neg_samples": 5,
@@ -285,59 +285,21 @@ class Doc2Vec:
         self.doc_embs = np.random.uniform(low=-0.001, high=0.001, size=(num_docs, emb_size))
         self.tok_embs = np.random.uniform(low=-0.001, high=0.001, size=(num_toks, emb_size))
 
-    # results for 50000 examples:
-    # einsum (1.3 sec - 100, 0.74 sec - 10000) 2,5; 2,7; 4,7
     def train(self, tok_idxs, doc_idxs, labels, lr=0.25):
-        Z_time = time.time()
-        Z = sigmoid(np.einsum("ij,ij->i", self.tok_embs[tok_idxs], self.doc_embs[doc_idxs]))
-        Z_time = time.time() - Z_time 
+        Z = sigmoid(np.nansum(self.tok_embs[tok_idxs] * self.doc_embs[doc_idxs], axis=1))
 
         batch_size = len(tok_idxs)
-        
-        grad_time = time.time()
-        doc_grad = (labels - Z).reshape((batch_size, 1)) * self.tok_embs[tok_idxs] * lr
-        tok_grad = (labels - Z).reshape((batch_size, 1)) * self.doc_embs[doc_idxs] * lr
-        grad_time = time.time() - grad_time
-        
-        sum_time = time.time()
-        self.tok_embs[tok_idxs] += tok_grad
-        self.doc_embs[doc_idxs] += doc_grad
-        sum_time = time.time() - sum_time
 
-        return (Z_time, grad_time, sum_time)
+        tok_grads = (Z - labels).reshape((batch_size, 1)) * self.doc_embs[doc_idxs] 
+        doc_grads = (Z - labels).reshape((batch_size, 1)) * self.tok_embs[tok_idxs]
 
-    # results for 500 batches:
-    # for-loop (10.4 sec - 100, 11.0 sec - 10000) 3.8; 4.0; 2.2
-    def train2(self, tok_idxs, doc_idxs, labels, lr=0.25):
-        total_Z_time = 0
-        total_grad_time = 0
-        total_sum_time = 0
-
-        for tok_idx, doc_idx, lbl in zip(tok_idxs, doc_idxs, labels):
-            Z_time = time.time()
-            Z = sigmoid(self.tok_embs[tok_idx].T @ self.doc_embs[doc_idx])
-            Z_time = time.time() - Z_time 
-
-            grad_time = time.time()
-            doc_grad = self.tok_embs[tok_idx] * (lbl - Z) * lr
-            tok_grad = self.doc_embs[doc_idx] * (lbl - Z) * lr
-            grad_time = time.time() - grad_time
-
-            sum_time = time.time()
-            self.tok_embs[tok_idx] += tok_grad
-            self.doc_embs[doc_idx] += doc_grad
-            sum_time = time.time() - sum_time
-
-            total_Z_time += Z_time
-            total_grad_time += grad_time
-            total_sum_time += sum_time
-
-        return (total_Z_time, total_grad_time, total_sum_time)
-    
+        for i, (tok_idx, doc_idx) in enumerate(zip(tok_idxs, doc_idxs)):
+            self.tok_embs[tok_idx] -= tok_grads[i] * lr
+            self.doc_embs[doc_idx] -= doc_grads[i] * lr
 
     def calculate_loss(self, tok_idxs, doc_idxs, labels):
-        Z = safe_sigmoid(np.sum(self.tok_embs[tok_idxs] * self.doc_embs[doc_idxs], axis=1))
-        return - np.sum(labels * np.log(Z) + (1 - labels) * np.log(1 - Z))
+        Z = safe_sigmoid(np.nansum(self.tok_embs[tok_idxs] * self.doc_embs[doc_idxs], axis=1))
+        return - np.nansum(labels * np.log(Z) + (1 - labels) * np.log(1 - Z))
 
 
 class Classifier():
@@ -385,8 +347,8 @@ class Classifier():
                 total_gen_time += gen_time
                 
                 total_batches += 1
-                if total_batches % 100 == 0:
-                    loss = self.d2v.calculate_loss(tok_idxs[:100], doc_idxs[:100], labels[:100])
+                if total_batches % 10000 == 0:
+                    loss = self.d2v.calculate_loss(tok_idxs[:100], doc_idxs[:100], labels[:100]) / 100
                     d2v_losses.append(loss)
 
                     print("\ntime spent generating batches: " + str(total_gen_time) + " sec")
@@ -403,8 +365,8 @@ class Classifier():
         return d2v_losses, train_accs, val_accs
 
     def train_logreg(self, train_embs, train_lbls, val_embs, val_lbls):
-        logreg = LogisticRegression(n_jobs=-1)
-        Cs = np.logspace(-6, -1, 10)
+        logreg = LogisticRegression(n_jobs=-1, max_iter=1000)
+        Cs = [0.001, 0.01, 0.1, 1, 10, 100]
         self.clf = GridSearchCV(logreg, n_jobs=-1, cv=10, param_grid=dict(C=Cs))
         self.clf.fit(train_embs, train_lbls)
 
@@ -413,9 +375,9 @@ class Classifier():
 
         total_train = len(train_lbls)
         total_val = len(val_lbls)
-
-        train_acc = np.sum(preds_train * train_lbls) / total_train
-        val_acc = np.sum(preds_val * val_lbls) / total_val
+        
+        train_acc = np.sum(preds_train == train_lbls) / total_train
+        val_acc = np.sum(preds_val == val_lbls) / total_val
         
         return train_acc, val_acc
 
